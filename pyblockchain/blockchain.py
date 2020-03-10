@@ -4,6 +4,10 @@ import logging
 import sys
 import time
 
+from ecdsa import NIST256p
+from ecdsa import VerifyingKey
+
+import wallet
 import utils
 
 MINING_DIFFICULTY = 3
@@ -37,15 +41,38 @@ class BlockChain(object):
         return hashlib.sha256(sorted_block.encode()).hexdigest()
     
     def add_transaction(self, sender_blockchain_address,
-                        recipient_blockchain_address, value):
+                        recipient_blockchain_address, value, 
+                        sender_public_key=None, signature=None):
         transaction = utils.sorted_dict_by_key({
             'sender_blockchain_address': sender_blockchain_address,
             'recipient_blockchain_address': recipient_blockchain_address,
             'value': float(value)
         })
-        self.transaction_pool.append(transaction)
-        return True
+
+        if sender_blockchain_address == MINING_SENDER:
+            self.transaction_pool.append(transaction)
+            return True
+
+        if self.verify_transaction_signature(sender_public_key, signature, transaction):
+            # if self.culc_total_amount(sender_blockchain_address) < float(value):
+            #     logger.error({'action': 'add_transaction', 'error': 'no_value'})
+            #     return False
+
+            self.transaction_pool.append(transaction)
+            return True
+        return False
     
+    def verify_transaction_signature(self, sender_public_key, signature, transaction):
+        sha256 = hashlib.sha256()
+        sha256.update(str(transaction).encode('utf-8'))
+        message = sha256.digest()
+        signature_bytes = bytes().fromhex(signature)
+        verifying_key = VerifyingKey.from_string(
+            bytes().fromhex(sender_public_key), curve=NIST256p
+        )
+        verified_key = verifying_key.verify(signature_bytes, message)
+        return verified_key
+
     def valid_proof(self, transactions, prev_hash, nonce,
                     difficulty=MINING_DIFFICULTY):
         guess_block = utils.sorted_dict_by_key({
@@ -56,7 +83,7 @@ class BlockChain(object):
         guess_hash = self.hash(guess_block)
         # print(guess_hash)
         return guess_hash[:difficulty] == '0'*difficulty
-
+    
     def proof_of_work(self):
         transactions = self.transaction_pool.copy()
         prev_hash = self.hash(self.chain[-1])
@@ -66,12 +93,12 @@ class BlockChain(object):
         return nonce
     
     def mining(self):
+        nonce = self.proof_of_work()
         self.add_transaction(
             sender_blockchain_address = MINING_SENDER,
             recipient_blockchain_address = self.blockchain_address,
             value = MINING_REWARD
         )
-        nonce = self.proof_of_work()
         prev_hash = self.hash(self.chain[-1])
         self.create_block(nonce, prev_hash)
         logger.info({'action': 'mining', 'status': 'success'})
@@ -89,25 +116,3 @@ class BlockChain(object):
         return total_amount
 
 
-if __name__ == '__main__':
-    my_blockchain_address = 'my_blockchain_address'
-    # first
-    block_chain = BlockChain(blockchain_address=my_blockchain_address)
-    block_chain.add_transaction('A', 'B', 1.0)
-    block_chain.mining()
-
-    # second
-    block_chain.add_transaction('C', 'D', 2.0)
-    block_chain.add_transaction('X', 'Y', 3.0)
-    block_chain.mining()
-
-    # third
-    block_chain.mining()
-
-    utils.pprint(block_chain.chain)
-
-    print('my', block_chain.culc_total_amount(my_blockchain_address))
-    print('C', block_chain.culc_total_amount('C'))
-    print('D', block_chain.culc_total_amount('D'))
-
-    print(block_chain.chain)
