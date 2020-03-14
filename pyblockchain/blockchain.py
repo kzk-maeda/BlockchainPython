@@ -1,8 +1,10 @@
+import contextlib
 import hashlib
 import json
 import logging
 import sys
 import time
+import threading
 
 from ecdsa import NIST256p
 from ecdsa import VerifyingKey
@@ -13,17 +15,20 @@ import utils
 MINING_DIFFICULTY = 3
 MINING_SENDER = 'THE BLOCKCHAIN'
 MINING_REWARD = 1.0
+MINING_TIMER_SEC= 20
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
 class BlockChain(object):
 
-    def __init__(self, blockchain_address=None):
+    def __init__(self, blockchain_address=None, port=None):
         self.transaction_pool = []
         self.chain = []
         self.create_block(0, self.hash({}))
         self.blockchain_address = blockchain_address
+        self.port = port
+        self.mining_semaphore = threading.Semaphore(1)
     
     def create_block(self, nonce, prev_hash):
         block = utils.sorted_dict_by_key({
@@ -40,6 +45,19 @@ class BlockChain(object):
         sorted_block = json.dumps(block, sort_keys=True)
         return hashlib.sha256(sorted_block.encode()).hexdigest()
     
+    def create_transaction(self, sender_blockchain_address,
+                        recipient_blockchain_address, value, 
+                        sender_public_key, signature):
+        is_transacted = self.add_transaction(
+            sender_blockchain_address,
+            recipient_blockchain_address, value, 
+            sender_public_key, signature
+        )
+
+        # TODO: Sync
+
+        return is_transacted
+
     def add_transaction(self, sender_blockchain_address,
                         recipient_blockchain_address, value, 
                         sender_public_key=None, signature=None):
@@ -93,6 +111,9 @@ class BlockChain(object):
         return nonce
     
     def mining(self):
+        if not self.transaction_pool:
+            return False
+
         nonce = self.proof_of_work()
         self.add_transaction(
             sender_blockchain_address = MINING_SENDER,
@@ -103,6 +124,15 @@ class BlockChain(object):
         self.create_block(nonce, prev_hash)
         logger.info({'action': 'mining', 'status': 'success'})
         return True
+    
+    def start_mining(self):
+        is_acquire = self.mining_semaphore.acquire(blocking=False)
+        if is_acquire:
+            with contextlib.ExitStack() as stack:
+                stack.callback(self.mining_semaphore.release)
+                self.mining()
+                loop = threading.Timer(MINING_TIMER_SEC, self.start_mining)
+                loop.start()
     
     def culc_total_amount(self, blockchain_address):
         total_amount = 0.0
