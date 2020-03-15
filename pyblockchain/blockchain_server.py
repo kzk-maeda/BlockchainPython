@@ -7,6 +7,7 @@ import wallet
 
 app = Flask(__name__)
 
+
 cache = {}
 def get_blockchain():
     cached_blockchain = cache.get('blockchain')
@@ -14,14 +15,13 @@ def get_blockchain():
         miners_wallet = wallet.Wallet()
         cache['blockchain'] = blockchain.BlockChain(
             blockchain_address=miners_wallet.blockchain_address,
-            port=app.config['port']
-        )
+            port=app.config['port'])
         app.logger.warning({
             'private_key': miners_wallet.private_key,
             'public_key': miners_wallet.public_key,
-            'blockchain_address': miners_wallet.blockchain_address,
-        })
+            'blockchain_address': miners_wallet.blockchain_address})
     return cache['blockchain']
+
 
 @app.route('/chain', methods=['GET'])
 def get_chain():
@@ -31,7 +31,8 @@ def get_chain():
     }
     return jsonify(response), 200
 
-@app.route('/transaction', methods=['GET', 'POST', 'PUT', 'DELETE'])
+
+@app.route('/transactions', methods=['GET', 'POST', 'PUT', 'DELETE'])
 def transaction():
     block_chain = get_blockchain()
     if request.method == 'GET':
@@ -41,7 +42,7 @@ def transaction():
             'length': len(transactions)
         }
         return jsonify(response), 200
-    
+
     if request.method == 'POST':
         request_json = request.json
         required = (
@@ -49,22 +50,21 @@ def transaction():
             'recipient_blockchain_address',
             'value',
             'sender_public_key',
-            'signature'
-        )
+            'signature')
         if not all(k in request_json for k in required):
             return jsonify({'message': 'missing values'}), 400
-        
+
         is_created = block_chain.create_transaction(
             request_json['sender_blockchain_address'],
             request_json['recipient_blockchain_address'],
             request_json['value'],
             request_json['sender_public_key'],
-            request_json['signature']
+            request_json['signature'],
         )
         if not is_created:
             return jsonify({'message': 'fail'}), 400
-        return jsonify({'message': 'success'}), 200
-    
+        return jsonify({'message': 'success'}), 201
+
     if request.method == 'PUT':
         request_json = request.json
         required = (
@@ -72,17 +72,16 @@ def transaction():
             'recipient_blockchain_address',
             'value',
             'sender_public_key',
-            'signature'
-        )
+            'signature')
         if not all(k in request_json for k in required):
             return jsonify({'message': 'missing values'}), 400
-        
+
         is_updated = block_chain.add_transaction(
             request_json['sender_blockchain_address'],
             request_json['recipient_blockchain_address'],
             request_json['value'],
             request_json['sender_public_key'],
-            request_json['signature']
+            request_json['signature'],
         )
         if not is_updated:
             return jsonify({'message': 'fail'}), 400
@@ -92,18 +91,21 @@ def transaction():
         block_chain.transaction_pool = []
         return jsonify({'message': 'success'}), 200
 
+
 @app.route('/mine', methods=['GET'])
 def mine():
     block_chain = get_blockchain()
     is_mined = block_chain.mining()
     if is_mined:
         return jsonify({'message': 'success'}), 200
-    return jsonify({'message': 'failed'}), 400
+    return jsonify({'message': 'fail'}), 400
+
 
 @app.route('/mine/start', methods=['GET'])
 def start_mine():
     get_blockchain().start_mining()
     return jsonify({'message': 'success'}), 200
+
 
 @app.route('/consensus', methods=['PUT'])
 def consensus():
@@ -115,13 +117,13 @@ def consensus():
 if __name__ == '__main__':
     from argparse import ArgumentParser
     parser = ArgumentParser()
-    parser.add_argument('-p', '--port', default=5000, type=int, help='Port')
+    parser.add_argument('-p', '--port', default=5000,
+                        type=int, help='port to listen on')
     args = parser.parse_args()
     port = args.port
 
     app.config['port'] = port
 
-    get_blockchain().sync_neighbours()
-    get_blockchain().resolve_conflicts()
+    get_blockchain().run()
 
     app.run(host='0.0.0.0', port=port, threaded=True, debug=True)
