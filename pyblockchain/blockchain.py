@@ -5,17 +5,21 @@ import logging
 import sys
 import time
 import threading
+import requests
 
 from ecdsa import NIST256p
 from ecdsa import VerifyingKey
 
-import wallet
 import utils
 
 MINING_DIFFICULTY = 3
 MINING_SENDER = 'THE BLOCKCHAIN'
 MINING_REWARD = 1.0
-MINING_TIMER_SEC= 20
+MINING_TIMER_SEC = 20
+
+BLOCKCHAIN_PORT_RANGE = (5000, 5003)
+NEIGHBOURS_IP_RANGE_NUM = (0, 1)
+BLOCKCHAIN_NEIGHBOURS_SYNC_TIME_SEC = 20
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
@@ -25,20 +29,41 @@ class BlockChain(object):
     def __init__(self, blockchain_address=None, port=None):
         self.transaction_pool = []
         self.chain = []
+        self.neighbours = []
         self.create_block(0, self.hash({}))
         self.blockchain_address = blockchain_address
         self.port = port
         self.mining_semaphore = threading.Semaphore(1)
+        self.sync_neighbours_semaphore = threading.Semaphore(1)
     
+    def set_neighbours(self):
+        self.neighbours = utils.find_neighbours(
+            utils.get_host(), self.port,
+            NEIGHBOURS_IP_RANGE_NUM[0], NEIGHBOURS_IP_RANGE_NUM[1],
+            BLOCKCHAIN_PORT_RANGE[0], BLOCKCHAIN_PORT_RANGE[1])
+        logger.info({'action': 'set_neighbours', 'neighbours': self.neighbours})
+
+    def sync_neighbours(self):
+        is_acquire = self.sync_neighbours_semaphore.acquire(blocking=False)
+        if is_acquire:
+            with contextlib.ExitStack() as stack:
+                stack.callback(self.sync_neighbours_semaphore.release)
+                self.set_neighbours()
+                loop = threading.Timer(BLOCKCHAIN_NEIGHBOURS_SYNC_TIME_SEC, self.sync_neighbours)
+                loop.start()
+
     def create_block(self, nonce, prev_hash):
         block = utils.sorted_dict_by_key({
             'timestamp': time.time(),
             'transactions': self.transaction_pool,
             'nonce': nonce,
-            'previous_hash': prev_hash 
-        })
+            'previous_hash': prev_hash})
         self.chain.append(block)
         self.transaction_pool = []
+
+        for node in self.neighbours:
+            requests.delete(f'http://{node}/transaction')
+
         return block
     
     def hash(self, block):
@@ -51,10 +76,21 @@ class BlockChain(object):
         is_transacted = self.add_transaction(
             sender_blockchain_address,
             recipient_blockchain_address, value, 
-            sender_public_key, signature
-        )
+            sender_public_key, signature)
 
         # TODO: Sync
+        if is_transacted:
+            for node in self.neighbours:
+                requests.put(
+                    f'http://{node}/transaction',
+                    json={
+                        'sender_blockchain_address': sender_blockchain_address,
+                        'recipient_blockchain_address': recipient_blockchain_address,
+                        'value': value,
+                        'sender_public_key': sender_public_key,
+                        'signature': signature,
+                    }
+                )
 
         return is_transacted
 
@@ -114,15 +150,19 @@ class BlockChain(object):
         if not self.transaction_pool:
             return False
 
-        nonce = self.proof_of_work()
         self.add_transaction(
             sender_blockchain_address = MINING_SENDER,
             recipient_blockchain_address = self.blockchain_address,
             value = MINING_REWARD
         )
+        nonce = self.proof_of_work()
         prev_hash = self.hash(self.chain[-1])
         self.create_block(nonce, prev_hash)
         logger.info({'action': 'mining', 'status': 'success'})
+
+        for node in self.neighbours:
+            requests.put(f'http://{node}/consensus')
+
         return True
     
     def start_mining(self):
@@ -145,4 +185,43 @@ class BlockChain(object):
                     total_amount -= value
         return total_amount
 
+    def valid_chain(self, chain):
+        pre_block = chain[0]
+        current_index = 1
+        while current_index < len(chain):
+            block = chain[current_index]
+            if block['previous_hash'] != self.hash(pre_block):
+                return False
 
+            if not self.valid_proof(
+                    block['transactions'], block['previous_hash'],
+                    block['nonce'], MINING_DIFFICULTY):
+                return False
+
+            pre_block = block
+            current_index += 1
+        return True
+        
+    def resolve_conflicts(self):
+        longest_chain = None
+        max_length = len(self.chain)
+        for node in self.neighbours:
+            response = requests.get(f'http://{node}/chain')
+            print(response.json())
+            if response.status_code == 200:
+                response_json = response.json()
+                chain = response_json['chain']
+                chain_length = len(chain)
+                print(chain_length, self.valid_chain(chain))
+                if chain_length > max_length and self.valid_chain(chain):
+                    print('valid: ', self.valid_chain(chain))
+                    max_length = chain_length
+                    longest_chain = chain
+        
+        if longest_chain:
+            self.chain = longest_chain
+            logger.info({'action': 'resolve_conflicts', 'status': 'replaced'})
+            return True
+        
+        logger.info({'action': 'resolve_conflicts', 'status': 'not_replaced'})
+        return False

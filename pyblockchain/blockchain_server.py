@@ -31,7 +31,7 @@ def get_chain():
     }
     return jsonify(response), 200
 
-@app.route('/transaction', methods=['GET', 'POST'])
+@app.route('/transaction', methods=['GET', 'POST', 'PUT', 'DELETE'])
 def transaction():
     block_chain = get_blockchain()
     if request.method == 'GET':
@@ -64,6 +64,33 @@ def transaction():
         if not is_created:
             return jsonify({'message': 'fail'}), 400
         return jsonify({'message': 'success'}), 200
+    
+    if request.method == 'PUT':
+        request_json = request.json
+        required = (
+            'sender_blockchain_address',
+            'recipient_blockchain_address',
+            'value',
+            'sender_public_key',
+            'signature'
+        )
+        if not all(k in request_json for k in required):
+            return jsonify({'message': 'missing values'}), 400
+        
+        is_updated = block_chain.add_transaction(
+            request_json['sender_blockchain_address'],
+            request_json['recipient_blockchain_address'],
+            request_json['value'],
+            request_json['sender_public_key'],
+            request_json['signature']
+        )
+        if not is_updated:
+            return jsonify({'message': 'fail'}), 400
+        return jsonify({'message': 'success'}), 200
+
+    if request.method == 'DELETE':
+        block_chain.transaction_pool = []
+        return jsonify({'message': 'success'}), 200
 
 @app.route('/mine', methods=['GET'])
 def mine():
@@ -78,8 +105,11 @@ def start_mine():
     get_blockchain().start_mining()
     return jsonify({'message': 'success'}), 200
 
-
-
+@app.route('/consensus', methods=['PUT'])
+def consensus():
+    block_chain = get_blockchain()
+    replaced = block_chain.resolve_conflicts()
+    return jsonify({'replaced': replaced}), 200
 
 
 if __name__ == '__main__':
@@ -90,5 +120,8 @@ if __name__ == '__main__':
     port = args.port
 
     app.config['port'] = port
+
+    get_blockchain().sync_neighbours()
+    get_blockchain().resolve_conflicts()
 
     app.run(host='0.0.0.0', port=port, threaded=True, debug=True)
